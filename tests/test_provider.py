@@ -544,3 +544,20 @@ def test_an_undeletable_orphan_makes_every_retry_pay_for_the_install(monkeypatch
     assert client.deleted == [orphan.name] * attempts
     assert len(_checks(orphan)) == attempts
     assert len(_installs(orphan)) == attempts * 2
+
+
+def test_a_failed_cleanup_still_releases_the_api_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("aiq_sprites.provider.time.sleep", lambda _: None)
+    sprite = FakeSprite("placeholder", [])
+    client = _DeleteFailsClient(sprite=sprite, create_status=409)
+    provider = provider_with_client(client, provider_settings=settings(python_packages=("numpy==2.3.0",)))
+    sprite.name = provider.sandbox_name
+    sprite.labels = ["aiq-sandbox", f"aiq-job-{provider.sandbox_name.removeprefix('aiq-')}"]
+    sprite.command_results.extend([(b"", 1, False), (b"no net", 1, False), (b"no net", 1, False)])
+
+    with pytest.raises(SpriteBootstrapError):
+        provider._create_session()
+
+    # close() keeps the client open so a delete can be retried. Nothing retries here,
+    # so this path owns releasing it rather than leaking a connection per attempt.
+    assert client.closed is True

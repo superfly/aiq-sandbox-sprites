@@ -188,6 +188,9 @@ class SpritesSandboxProvider(SandboxProvider):
                     session.close()
                 except Exception:  # noqa: BLE001 - preserve the creation failure, but report cleanup failure
                     logger.exception("Failed to clean up Sprite after provider initialization error")
+                    # close() leaves the client open so a delete can be retried. This path
+                    # is giving up, so it owns the release rather than leaking a connection.
+                    client.close()
             raise
 
     def _create_or_attach(self, client: SpritesClient) -> tuple[Sprite, bool]:
