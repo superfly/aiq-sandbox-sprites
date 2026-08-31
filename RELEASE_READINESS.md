@@ -7,9 +7,9 @@ Status: ready for an alpha release and NVIDIA AI-Q review.
 ## Release artifacts
 
 - `dist/aiq_sandbox_sprites-0.1.0-py3-none-any.whl`
-  - SHA-256: `765f947dc3727c19563c7dd04ac100529a788d3fab05a13dc7a6d8e42e9201de`
+  - SHA-256: `97dd3d3303212658df680ec898564bbc0ceb00a780dbde3acfaa588a58b67622`
 - `dist/aiq_sandbox_sprites-0.1.0.tar.gz`
-  - SHA-256: `e73a41058e68926433aec31a7aefd63fee50f4bc08ada0cc7615833d17f58862`
+  - SHA-256: `bff9ba23b062b79ebadf5c2683b012f465ecb925b281bfa351b28c38fe5d13c8`
 
 The wheel metadata declares Python 3.11 through 3.13, DeepAgents 0.6.8 through
 0.7.x, and sprites-py 0.5.x. The source archive contains the examples, runtime

@@ -35,7 +35,7 @@ Documentation = "https://docs.sprites.dev"
 Issues = "https://github.com/superfly/aiq-sandbox-sprites/issues"
 Repository = "https://github.com/superfly/aiq-sandbox-sprites"
 
-[dependency-groups]
+[project.optional-dependencies]
 dev = [
     "build>=1.2,<2",
     "hatchling>=1.27,<1.28",
