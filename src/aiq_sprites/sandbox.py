@@ -282,17 +282,24 @@ class SpriteSandbox(BaseSandbox):
             return FileDownloadResponse(path=path, error=_file_error(exc))
 
     def close(self) -> None:
-        """Destroy only the still-marked Sprite, then release the API client."""
+        """Destroy only the still-marked Sprite, then release the API client.
+
+        A failed delete leaves the session open and the client usable so a later
+        close() retries and the Sprite is not orphaned. A changed ownership label
+        is permanent rather than transient, so it latches the session closed and
+        releases the client before raising.
+        """
         if self._closed:
             return
-        self._closed = True
         try:
-            try:
-                current = self._client.get_sprite(self._sprite.name)
-            except NotFoundError:
-                return
+            current = self._client.get_sprite(self._sprite.name)
+        except NotFoundError:
+            pass
+        else:
             if self._ownership_label not in current.labels:
+                self._closed = True
+                self._client.close()
                 raise SpriteOwnershipError(f"Refusing to destroy Sprite {self._sprite.name!r}: ownership label changed")
             self._client.delete_sprite(self._sprite.name)
-        finally:
-            self._client.close()
+        self._closed = True
+        self._client.close()

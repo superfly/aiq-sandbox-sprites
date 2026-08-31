@@ -192,3 +192,65 @@ def test_close_refuses_to_delete_replaced_sprite() -> None:
 
     assert client.deleted == []
     assert client.closed is True
+
+    # A changed ownership label is permanent, so it latches: no retry, no delete.
+    session.close()
+
+    assert client.deleted == []
+
+
+def test_close_retries_the_delete_after_a_transient_failure() -> None:
+    session, _, client = make_session()
+    attempts: list[str] = []
+    succeeding_delete = client.delete_sprite
+
+    def flaky_delete(name: str) -> None:
+        attempts.append(name)
+        if len(attempts) == 1:
+            raise RuntimeError("transient delete failure")
+        succeeding_delete(name)
+
+    client.delete_sprite = flaky_delete  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="transient delete failure"):
+        session.close()
+
+    assert client.deleted == []
+    assert client.closed is False
+
+    session.close()
+
+    assert attempts == ["aiq-test", "aiq-test"]
+    assert client.deleted == ["aiq-test"]
+    assert client.closed is True
+
+
+def test_close_keeps_the_session_usable_when_the_ownership_recheck_fails() -> None:
+    session, _, client = make_session()
+
+    def failing_get(name: str) -> FakeSprite:
+        raise RuntimeError("transient api failure")
+
+    client.get_sprite = failing_get  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="transient api failure"):
+        session.close()
+
+    assert client.closed is False
+
+    del client.get_sprite
+    session.close()
+
+    assert client.deleted == ["aiq-test"]
+    assert client.closed is True
+
+
+def test_close_releases_the_client_when_the_sprite_is_already_gone() -> None:
+    session, _, client = make_session()
+    client.sprite = None
+
+    session.close()
+    session.close()
+
+    assert client.deleted == []
+    assert client.closed is True
