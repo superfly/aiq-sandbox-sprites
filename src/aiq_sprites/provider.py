@@ -29,6 +29,9 @@ _NETWORK_REACHABLE = b"AIQ_SPRITES_NETWORK_REACHABLE"
 _NETWORK_BLOCKED = b"AIQ_SPRITES_NETWORK_BLOCKED"
 _BOOTSTRAP_ATTEMPTS = 2
 _PINNED_SPEC = re.compile(r"[A-Za-z0-9._-]+==[A-Za-z0-9._+!-]+")
+# Commands run through a login shell, whose PATH an attached Sprite's earlier
+# generated code could have prepended to. Pin the lookup to trusted directories.
+_PINNED_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 
 class SpriteCreationError(RuntimeError):
@@ -68,7 +71,7 @@ def _installed_check_command(packages: tuple[str, ...]) -> str | None:
         "        raise SystemExit(1)\n"
     )
     args = " ".join(shlex.quote(package) for package in packages)
-    return f"python3 -c {shlex.quote(script)} {args}"
+    return f"PATH={_PINNED_PATH}; python3 -c {shlex.quote(script)} {args}"
 
 
 def _response_detail(response: object) -> str:
@@ -138,6 +141,9 @@ class SpritesSandboxProvider(SandboxProvider):
             timeout=self.settings.api_timeout_seconds,
         )
         session: SpriteSandbox | None = None
+        # Bound before the try so the failure handler can never raise NameError when
+        # the create-or-attach call itself fails; True means "nothing attached to lose".
+        created = True
         try:
             sprite, created = self._create_or_attach(client)
             ownership_label = _ownership_label(self.job_id)
@@ -170,6 +176,14 @@ class SpritesSandboxProvider(SandboxProvider):
             if session is None:
                 client.close()
             else:
+                if not created:
+                    # An attached Sprite carries earlier work from this same job, and the
+                    # close() below destroys it along with the Sprite. Say so.
+                    logger.warning(
+                        "Destroying attached Sprite %s after a failed session start; "
+                        "any earlier in-sandbox work for this job is discarded",
+                        self.sandbox_name,
+                    )
                 try:
                     session.close()
                 except Exception:  # noqa: BLE001 - preserve the creation failure, but report cleanup failure
@@ -251,6 +265,7 @@ class SpritesSandboxProvider(SandboxProvider):
 
         package_args = " ".join(shlex.quote(package) for package in packages)
         command = (
+            f"PATH={_PINNED_PATH}; "
             "if command -v uv >/dev/null 2>&1; then "
             f"uv pip install --system -- {package_args}; "
             "else "
