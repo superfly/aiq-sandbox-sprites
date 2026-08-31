@@ -1,0 +1,10 @@
+.venv/
+.aiq-source/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+__pycache__/
+*.egg-info/
+build/
+dist/

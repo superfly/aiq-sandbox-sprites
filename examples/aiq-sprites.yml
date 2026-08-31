@@ -1,0 +1,14 @@
+# Merge this function into an AI-Q deep-research configuration and point the
+# deep_research_agent's `sandbox` field at `deep_research_sandbox`.
+functions:
+  deep_research_sandbox:
+    _type: deep_research_sandbox
+    provider: sprites
+    workdir: /workspace
+    network: blocked
+    timeout: 1200
+    idle_timeout: 1800
+    artifact_capture:
+      enabled: true
+      max_file_bytes: 50000000
+      allow_extensions: [.png, .jpg, .jpeg, .webp, .csv, .json, .md, .ipynb, .pdf]
