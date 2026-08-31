@@ -236,3 +236,92 @@ def test_aiq_provider_compliance_contract() -> None:
     first_cmd = session.execute.call_args_list[0].args[0]
     assert first_cmd.startswith("mkdir -p") and provider.workdir in first_cmd
     session.execute.assert_called_with("echo ok", timeout=5)
+
+
+class _DeleteFailsClient(FakeClient):
+    """A client whose Sprite deletion fails transiently, leaving the Sprite in place."""
+
+    def delete_sprite(self, name: str) -> None:
+        self.deleted.append(name)
+        raise RuntimeError("transient delete failure")
+
+
+def test_attach_bootstraps_a_sprite_left_behind_by_failed_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("aiq_sprites.provider.time.sleep", lambda _: None)
+    packages = settings(python_packages=("numpy==2.3.0",))
+
+    sprite = FakeSprite("placeholder", [])
+    failing = _DeleteFailsClient(sprite=sprite)
+    first = provider_with_client(failing, provider_settings=packages)
+    sprite.name = first.sandbox_name
+    sprite.labels = ["aiq-sandbox", f"aiq-job-{first.sandbox_name.removeprefix('aiq-')}"]
+    sprite.command_results.extend([(b"install failed", 1, False), (b"install failed", 1, False)])
+
+    with pytest.raises(SpriteBootstrapError):
+        first._create_session()
+
+    # Cleanup was attempted and failed, so a labelled but un-bootstrapped Sprite survives.
+    assert failing.deleted == [first.sandbox_name]
+    assert failing.sprite is sprite
+    already_run = len(sprite.commands)
+
+    retry = FakeClient(sprite=sprite, create_status=409)
+    second = provider_with_client(retry, provider_settings=packages)
+    # The survivor never finished bootstrap, so the installed-check fails and the
+    # install that follows succeeds.
+    sprite.command_results.append((b"", 1, False))
+    sprite.run_results.append(completed(0, b"AIQ_SPRITES_NETWORK_BLOCKED\n"))
+    session = second._create_session()
+
+    installs = [
+        command for command in sprite.commands[already_run:] if "install" in command["env"]["AIQ_SPRITES_COMMAND"]
+    ]
+    assert installs, "attached Sprite was handed to the job without its configured python_packages"
+    session.close()
+
+
+def test_attach_fails_closed_when_the_left_behind_sprite_cannot_install(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("aiq_sprites.provider.time.sleep", lambda _: None)
+    packages = settings(python_packages=("numpy==2.3.0",))
+
+    sprite = FakeSprite("placeholder", [])
+    retry = FakeClient(sprite=sprite, create_status=409)
+    provider = provider_with_client(retry, provider_settings=packages)
+    sprite.name = provider.sandbox_name
+    sprite.labels = ["aiq-sandbox", f"aiq-job-{provider.sandbox_name.removeprefix('aiq-')}"]
+    # An orphan left behind after its policy was applied fails the check and can no
+    # longer reach the index to repair itself.
+    sprite.command_results.extend(
+        [(b"", 1, False), (b"network is unreachable", 1, False), (b"network is unreachable", 1, False)]
+    )
+    # Present so that code which skips bootstrap entirely reaches the policy probe and
+    # returns a session, making this test fail on its own assertion rather than on an
+    # unexpected-probe error from the fake.
+    sprite.run_results.append(completed(0, b"AIQ_SPRITES_NETWORK_BLOCKED\n"))
+
+    with pytest.raises(SpriteBootstrapError):
+        provider._create_session()
+
+    # Fail closed, and clear the orphan so the next attempt creates a fresh Sprite.
+    assert retry.deleted == [provider.sandbox_name]
+
+
+def test_attach_leaves_an_already_bootstrapped_sprite_alone() -> None:
+    packages = settings(python_packages=("numpy==2.3.0",))
+
+    sprite = FakeSprite("placeholder", [])
+    client = FakeClient(sprite=sprite, create_status=409)
+    provider = provider_with_client(client, provider_settings=packages)
+    sprite.name = provider.sandbox_name
+    sprite.labels = ["aiq-sandbox", f"aiq-job-{provider.sandbox_name.removeprefix('aiq-')}"]
+    # The packages are already there, so the check passes and no install is attempted.
+    # A restricted Sprite could not reach the index if one were.
+    sprite.command_results.append((b"", 0, False))
+    sprite.run_results.append(completed(0, b"AIQ_SPRITES_NETWORK_BLOCKED\n"))
+
+    session = provider._create_session()
+
+    assert session.id == provider.sandbox_name
+    assert client.deleted == []
+    installs = [c for c in sprite.commands if "install" in c["env"]["AIQ_SPRITES_COMMAND"]]
+    assert not installs, "reinstalled packages that were already present on the attached Sprite"

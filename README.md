@@ -84,8 +84,15 @@ export AIQ_SPRITES_PYTHON_PACKAGES='["matplotlib", "numpy", "pandas", "pillow", 
   ownership labels.
 - Creation is attempted first. A name collision is attachable only when both
   the provider and exact job ownership labels match.
-- Trusted package bootstrap runs only for a newly created Sprite, before
-  generated code and before the final network restriction is installed.
+- Trusted package bootstrap runs for a newly created Sprite, before generated
+  code and before the final network restriction is installed.
+- An attached Sprite gets a check instead, because cleanup after a failed
+  creation is best-effort: the ownership label proves the Sprite is ours, not
+  that it finished bootstrap. Pinned packages already present are left alone,
+  so a resumed sandbox is untouched. One that fails the check is installed into
+  and, if that install fails, destroyed rather than handed to the job
+  incomplete. Neither ordering guarantee above holds for an attached Sprite:
+  it may already be network-restricted and may already have run generated code.
 - `blocked` maps to a wildcard deny policy; `allowlist` maps to explicit allow
   rules with default deny; `open` maps to an empty policy.
 - Restricted policies are checked through the policy API and a live direct-IP
