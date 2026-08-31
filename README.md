@@ -18,13 +18,13 @@ that same Python environment:
 pip install aiq-sandbox-sprites
 ```
 
-AI-Q 2.2 is not currently published as an `aiq-agent` PyPI distribution, so the
-provider declares the shared Deep Agents protocol rather than an unresolvable
-host-package dependency.
+AI-Q is installed from NVIDIA's source distribution. The provider declares the
+shared Deep Agents protocol rather than coupling its package metadata to the
+host application's distribution channel.
 
 The provider requires AI-Q 2.2's `aiq.sandbox_providers` extension point. AI-Q
 2.1 does not expose that interface and is not supported. The tested compatibility
-range currently covers AI-Q `v2.2.0-rc6` with Deep Agents 0.6.8 and AI-Q's
+range currently covers AI-Q `v2.2.1` with Deep Agents 0.6.8 and AI-Q's
 `develop` branch with Deep Agents 0.7.x.
 
 Set a restricted Sprites token on the AI-Q host:

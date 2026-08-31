@@ -7,9 +7,9 @@ Status: ready for an alpha release and NVIDIA AI-Q review.
 ## Release artifacts
 
 - `dist/aiq_sandbox_sprites-0.1.0-py3-none-any.whl`
-  - SHA-256: `97dd3d3303212658df680ec898564bbc0ceb00a780dbde3acfaa588a58b67622`
+  - SHA-256: `1e42f23afd8021c456b04538605d71c007159d3e6d8d60541e3a9a4ddd5713d7`
 - `dist/aiq_sandbox_sprites-0.1.0.tar.gz`
-  - SHA-256: `bff9ba23b062b79ebadf5c2683b012f465ecb925b281bfa351b28c38fe5d13c8`
+  - SHA-256: `cdaa7715cd2ec0251020ac2a82df6e259afa9c40801e287e1249355e9fc49bad`
 
 The wheel metadata declares Python 3.11 through 3.13, DeepAgents 0.6.8 through
 0.7.x, and sprites-py 0.5.x. The source archive contains the examples, runtime
@@ -51,7 +51,7 @@ artifact/lifecycle scenarios in these AI-Q environments:
 
 | AI-Q baseline | DeepAgents | sprites-py | Result |
 | --- | --- | --- | --- |
-| `v2.2.0-rc6` | 0.6.8 | 0.5.1 | compatible; both end-to-end scenarios passed |
+| `v2.2.1` (`6ec77d9`) | 0.6.8 | 0.5.1 | compatible; both end-to-end scenarios passed |
 | `develop` (`bf4e67d`) | 0.7.7 | 0.5.1 | compatible; both end-to-end scenarios passed |
 
 The end-to-end test verifies checkpoint and final artifact capture, SQLite
