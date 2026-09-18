@@ -10,6 +10,7 @@ from aiq_agent.agents.deep_researcher.sandbox.config import SandboxConfig
 from aiq_agent.agents.deep_researcher.sandbox.registry import create_sandbox_backend
 
 from aiq_sprites.provider import SpriteBootstrapError, SpriteCreationError, SpritesSandboxProvider
+from aiq_sprites.sandbox import _CLOSE_ATTEMPTS
 from aiq_sprites.settings import SpritesSettings
 from tests.fakes import FakeClient, FakeSprite, completed
 
@@ -240,15 +241,26 @@ def test_aiq_provider_compliance_contract() -> None:
 
 
 class _DeleteFailsClient(FakeClient):
-    """A client whose Sprite deletion fails transiently, leaving the Sprite in place."""
+    """A client whose Sprite deletion always fails, leaving the Sprite in place."""
 
     def delete_sprite(self, name: str) -> None:
         self.deleted.append(name)
         raise RuntimeError("transient delete failure")
 
 
+class _FlakyDeleteClient(FakeClient):
+    """A client whose first Sprite deletion fails transiently, then succeeds."""
+
+    def delete_sprite(self, name: str) -> None:
+        self.deleted.append(name)
+        if len(self.deleted) == 1:
+            raise RuntimeError("transient delete failure")
+        self.sprite = None
+
+
 def test_attach_bootstraps_a_sprite_left_behind_by_failed_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("aiq_sprites.provider.time.sleep", lambda _: None)
+    monkeypatch.setattr("aiq_sprites.sandbox.time.sleep", lambda _: None)
     packages = settings(python_packages=("numpy==2.3.0",))
 
     sprite = FakeSprite("placeholder", [])
@@ -262,7 +274,7 @@ def test_attach_bootstraps_a_sprite_left_behind_by_failed_cleanup(monkeypatch: p
         first._create_session()
 
     # Cleanup was attempted and failed, so a labelled but un-bootstrapped Sprite survives.
-    assert failing.deleted == [first.sandbox_name]
+    assert failing.deleted == [first.sandbox_name] * _CLOSE_ATTEMPTS
     assert failing.sprite is sprite
     already_run = len(sprite.commands)
 
@@ -328,7 +340,7 @@ def test_attach_leaves_an_already_bootstrapped_sprite_alone() -> None:
     assert not installs, "reinstalled packages that were already present on the attached Sprite"
 
 
-_PINNED_PATH_PREFIX = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+_PINNED_PATH_PREFIX = "PATH=/.sprite/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 
 def test_bootstrap_install_pins_the_installer_lookup_path() -> None:
@@ -523,6 +535,7 @@ def test_a_cleared_orphan_lets_the_next_session_start_fresh(monkeypatch: pytest.
 
 def test_an_undeletable_orphan_makes_every_retry_pay_for_the_install(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("aiq_sprites.provider.time.sleep", lambda _: None)
+    monkeypatch.setattr("aiq_sprites.sandbox.time.sleep", lambda _: None)
     packages = settings(python_packages=("numpy==2.3.0",))
 
     orphan = FakeSprite("placeholder", [])
@@ -541,13 +554,14 @@ def test_an_undeletable_orphan_makes_every_retry_pay_for_the_install(monkeypatch
 
     # The orphan survives every attempt, and every attempt re-pays the full install budget.
     assert client.sprite is orphan
-    assert client.deleted == [orphan.name] * attempts
+    assert client.deleted == [orphan.name] * attempts * _CLOSE_ATTEMPTS
     assert len(_checks(orphan)) == attempts
     assert len(_installs(orphan)) == attempts * 2
 
 
 def test_a_failed_cleanup_still_releases_the_api_client(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("aiq_sprites.provider.time.sleep", lambda _: None)
+    monkeypatch.setattr("aiq_sprites.sandbox.time.sleep", lambda _: None)
     sprite = FakeSprite("placeholder", [])
     client = _DeleteFailsClient(sprite=sprite, create_status=409)
     provider = provider_with_client(client, provider_settings=settings(python_packages=("numpy==2.3.0",)))
@@ -558,6 +572,50 @@ def test_a_failed_cleanup_still_releases_the_api_client(monkeypatch: pytest.Monk
     with pytest.raises(SpriteBootstrapError):
         provider._create_session()
 
-    # close() keeps the client open so a delete can be retried. Nothing retries here,
-    # so this path owns releasing it rather than leaking a connection per attempt.
+    # close() gives up on the delete after bounded retries but always releases
+    # the client, so a failed cleanup does not leak a connection per attempt.
+    assert client.deleted == [provider.sandbox_name] * _CLOSE_ATTEMPTS
+    assert client.closed is True
+
+
+def test_terminal_cleanup_retries_a_transient_delete_inside_the_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AI-Q calls teardown once per job, so the delete retry must live inside close()."""
+    monkeypatch.setattr("aiq_sprites.sandbox.time.sleep", lambda _: None)
+    sprite = FakeSprite("placeholder", [])
+    client = _FlakyDeleteClient(sprite=sprite)
+    provider = provider_with_client(client, provider_settings=settings(verify_network=False))
+    sprite.name = provider.sandbox_name
+    sprite.labels = ["aiq-sandbox", f"aiq-job-{provider.sandbox_name.removeprefix('aiq-')}"]
+    sprite.command_results.extend([(b"", 0, False), (b"contract-ok\n", 0, False)])
+
+    provider.execute("printf contract-ok")
+    provider.terminate()
+
+    assert client.deleted == [provider.sandbox_name, provider.sandbox_name]
+    assert client.closed is True
+    assert provider.cleanup_succeeded is True
+
+
+def test_terminal_cleanup_reports_an_undeletable_sprite_without_leaking_the_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("aiq_sprites.sandbox.time.sleep", lambda _: None)
+    sprite = FakeSprite("placeholder", [])
+    client = _DeleteFailsClient(sprite=sprite)
+    provider = provider_with_client(client, provider_settings=settings(verify_network=False))
+    sprite.name = provider.sandbox_name
+    sprite.labels = ["aiq-sandbox", f"aiq-job-{provider.sandbox_name.removeprefix('aiq-')}"]
+    sprite.command_results.extend([(b"", 0, False), (b"contract-ok\n", 0, False)])
+
+    provider.execute("printf contract-ok")
+    provider.close()
+
+    assert provider.cleanup_succeeded is False
+    assert provider.cleanup_failure_reason_codes == ("session_close_failed",)
+    assert client.deleted == [provider.sandbox_name] * _CLOSE_ATTEMPTS
+    # The Sprite is orphaned and reported as a cleanup failure, but the API
+    # connection is still released rather than left open.
+    assert client.sprite is sprite
     assert client.closed is True

@@ -30,8 +30,11 @@ _NETWORK_BLOCKED = b"AIQ_SPRITES_NETWORK_BLOCKED"
 _BOOTSTRAP_ATTEMPTS = 2
 _PINNED_SPEC = re.compile(r"[A-Za-z0-9._-]+==[A-Za-z0-9._+!-]+")
 # Commands run through a login shell, whose PATH an attached Sprite's earlier
-# generated code could have prepended to. Pin the lookup to trusted directories.
-_PINNED_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+# generated code could have prepended to. Pin the lookup to the image-owned
+# toolchain directory (/.sprite/bin holds the Python and uv shims, so bootstrap
+# targets the same interpreter the job executes with) plus trusted system
+# directories. User-writable dirs a mutated PATH could put first stay excluded.
+_PINNED_PATH = "/.sprite/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 
 class SpriteCreationError(RuntimeError):
@@ -188,9 +191,6 @@ class SpritesSandboxProvider(SandboxProvider):
                     session.close()
                 except Exception:  # noqa: BLE001 - preserve the creation failure, but report cleanup failure
                     logger.exception("Failed to clean up Sprite after provider initialization error")
-                    # close() leaves the client open so a delete can be retried. This path
-                    # is giving up, so it owns the release rather than leaking a connection.
-                    client.close()
             raise
 
     def _create_or_attach(self, client: SpritesClient) -> tuple[Sprite, bool]:

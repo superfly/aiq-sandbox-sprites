@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import shlex
+import time
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import TYPE_CHECKING
 from urllib.parse import quote
@@ -22,6 +23,8 @@ _TRUNCATION_MARKER = b"\n...[AI-Q Sprites output truncated]...\n"
 _COMMAND_ENV = "AIQ_SPRITES_COMMAND"
 _COMMAND_TIMEOUT_ENV = "AIQ_SPRITES_TIMEOUT_SECONDS"
 _TRANSPORT_TIMEOUT_GRACE_SECONDS = 5.0
+_CLOSE_ATTEMPTS = 3
+_CLOSE_RETRY_DELAY_SECONDS = 1.0
 
 
 class SpriteOwnershipError(RuntimeError):
@@ -284,22 +287,39 @@ class SpriteSandbox(BaseSandbox):
     def close(self) -> None:
         """Destroy only the still-marked Sprite, then release the API client.
 
-        A failed delete leaves the session open and the client usable so a later
-        close() retries and the Sprite is not orphaned. A changed ownership label
-        is permanent rather than transient, so it latches the session closed and
-        releases the client before raising.
+        A failed delete is retried inside this call: AI-Q drops its session
+        reference before calling close() and swallows teardown errors, so a
+        retry has to happen here or not at all. Whatever the outcome, the
+        session latches closed and the client is released rather than left
+        open. A changed ownership label is permanent, so it raises immediately
+        without consuming a retry.
         """
         if self._closed:
             return
         try:
+            for attempt in range(_CLOSE_ATTEMPTS):
+                try:
+                    self._destroy_marked_sprite()
+                except SpriteOwnershipError:
+                    raise
+                except Exception:
+                    if attempt + 1 >= _CLOSE_ATTEMPTS:
+                        raise
+                    time.sleep(_CLOSE_RETRY_DELAY_SECONDS)
+                else:
+                    return
+        finally:
+            self._closed = True
+            self._client.close()
+
+    def _destroy_marked_sprite(self) -> None:
+        try:
             current = self._client.get_sprite(self._sprite.name)
         except NotFoundError:
-            pass
-        else:
-            if self._ownership_label not in current.labels:
-                self._closed = True
-                self._client.close()
-                raise SpriteOwnershipError(f"Refusing to destroy Sprite {self._sprite.name!r}: ownership label changed")
+            return
+        if self._ownership_label not in current.labels:
+            raise SpriteOwnershipError(f"Refusing to destroy Sprite {self._sprite.name!r}: ownership label changed")
+        try:
             self._client.delete_sprite(self._sprite.name)
-        self._closed = True
-        self._client.close()
+        except NotFoundError:
+            pass

@@ -7,9 +7,9 @@ import time
 from collections.abc import Iterator
 
 import pytest
-from sprites import FileNotFoundError_
+from sprites import FileNotFoundError_, NotFoundError
 
-from aiq_sprites.sandbox import SpriteOwnershipError, SpriteSandbox, _execute_wrapper
+from aiq_sprites.sandbox import _CLOSE_ATTEMPTS, SpriteOwnershipError, SpriteSandbox, _execute_wrapper
 from tests.fakes import FakeClient, FakeSprite
 
 
@@ -199,7 +199,8 @@ def test_close_refuses_to_delete_replaced_sprite() -> None:
     assert client.deleted == []
 
 
-def test_close_retries_the_delete_after_a_transient_failure() -> None:
+def test_close_retries_a_transient_delete_within_the_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("aiq_sprites.sandbox.time.sleep", lambda _: None)
     session, _, client = make_session()
     attempts: list[str] = []
     succeeding_delete = client.delete_sprite
@@ -212,12 +213,6 @@ def test_close_retries_the_delete_after_a_transient_failure() -> None:
 
     client.delete_sprite = flaky_delete  # type: ignore[method-assign]
 
-    with pytest.raises(RuntimeError, match="transient delete failure"):
-        session.close()
-
-    assert client.deleted == []
-    assert client.closed is False
-
     session.close()
 
     assert attempts == ["aiq-test", "aiq-test"]
@@ -225,10 +220,65 @@ def test_close_retries_the_delete_after_a_transient_failure() -> None:
     assert client.closed is True
 
 
-def test_close_keeps_the_session_usable_when_the_ownership_recheck_fails() -> None:
+def test_close_gives_up_after_bounded_retries_and_still_releases_the_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("aiq_sprites.sandbox.time.sleep", lambda _: None)
     session, _, client = make_session()
+    attempts: list[str] = []
+
+    def failing_delete(name: str) -> None:
+        attempts.append(name)
+        raise RuntimeError("transient delete failure")
+
+    client.delete_sprite = failing_delete  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="transient delete failure"):
+        session.close()
+
+    assert attempts == ["aiq-test"] * _CLOSE_ATTEMPTS
+    assert client.deleted == []
+    assert client.closed is True
+
+    # Giving up latches the session closed: the client is gone, so a later
+    # close() has nothing to retry with and does not pay for more attempts.
+    session.close()
+
+    assert attempts == ["aiq-test"] * _CLOSE_ATTEMPTS
+
+
+def test_close_retries_a_transient_ownership_recheck_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("aiq_sprites.sandbox.time.sleep", lambda _: None)
+    session, _, client = make_session()
+    real_get = client.get_sprite
+    calls = 0
+
+    def flaky_get(name: str) -> FakeSprite:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("transient api failure")
+        return real_get(name)
+
+    client.get_sprite = flaky_get  # type: ignore[method-assign]
+
+    session.close()
+
+    assert calls == 2
+    assert client.deleted == ["aiq-test"]
+    assert client.closed is True
+
+
+def test_close_releases_the_client_when_the_ownership_recheck_keeps_failing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("aiq_sprites.sandbox.time.sleep", lambda _: None)
+    session, _, client = make_session()
+    attempts = 0
 
     def failing_get(name: str) -> FakeSprite:
+        nonlocal attempts
+        attempts += 1
         raise RuntimeError("transient api failure")
 
     client.get_sprite = failing_get  # type: ignore[method-assign]
@@ -236,12 +286,53 @@ def test_close_keeps_the_session_usable_when_the_ownership_recheck_fails() -> No
     with pytest.raises(RuntimeError, match="transient api failure"):
         session.close()
 
-    assert client.closed is False
+    assert attempts == _CLOSE_ATTEMPTS
+    assert client.deleted == []
+    assert client.closed is True
 
-    del client.get_sprite
+
+def test_close_treats_an_already_deleted_sprite_as_done() -> None:
+    session, _, client = make_session()
+    attempts = 0
+
+    def gone_delete(name: str) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise NotFoundError(name)
+
+    client.delete_sprite = gone_delete  # type: ignore[method-assign]
+
     session.close()
 
-    assert client.deleted == ["aiq-test"]
+    # The Sprite is already gone, which is the desired end state: no retry needed.
+    assert attempts == 1
+    assert client.closed is True
+
+
+def test_close_refuses_to_delete_when_ownership_flips_between_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ownership recheck runs on every attempt, not just the first."""
+    monkeypatch.setattr("aiq_sprites.sandbox.time.sleep", lambda _: None)
+    sprite = FakeSprite("aiq-test", ["aiq-sandbox", "aiq-job-owner"])
+    session, _, client = make_session(sprite=sprite, client=FakeClient(sprite=sprite))
+    real_get = client.get_sprite
+    calls = 0
+
+    def flaky_get(name: str) -> FakeSprite:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("transient api failure")
+        client.sprite = FakeSprite(name, ["aiq-sandbox", "different-owner"])
+        return real_get(name)
+
+    client.get_sprite = flaky_get  # type: ignore[method-assign]
+
+    with pytest.raises(SpriteOwnershipError):
+        session.close()
+
+    assert client.deleted == []
     assert client.closed is True
 
 
