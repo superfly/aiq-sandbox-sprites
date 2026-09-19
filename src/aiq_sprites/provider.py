@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import shlex
 import time
 from collections.abc import Callable
@@ -27,6 +28,13 @@ _PROVIDER_LABEL = "aiq-sandbox"
 _NETWORK_REACHABLE = b"AIQ_SPRITES_NETWORK_REACHABLE"
 _NETWORK_BLOCKED = b"AIQ_SPRITES_NETWORK_BLOCKED"
 _BOOTSTRAP_ATTEMPTS = 2
+_PINNED_SPEC = re.compile(r"[A-Za-z0-9._-]+==[A-Za-z0-9._+!-]+")
+# Commands run through a login shell, whose PATH an attached Sprite's earlier
+# generated code could have prepended to. Pin the lookup to the image-owned
+# toolchain directory (/.sprite/bin holds the Python and uv shims, so bootstrap
+# targets the same interpreter the job executes with) plus trusted system
+# directories. User-writable dirs a mutated PATH could put first stay excluded.
+_PINNED_PATH = "/.sprite/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 
 class SpriteCreationError(RuntimeError):
@@ -47,6 +55,26 @@ def _job_digest(job_id: str) -> str:
 
 def _ownership_label(job_id: str) -> str:
     return f"aiq-job-{_job_digest(job_id)}"
+
+
+def _installed_check_command(packages: tuple[str, ...]) -> str | None:
+    """A command exiting 0 only when every configured package is already installed.
+
+    Returns None when any spec is not a simple `name==version` pin, because nothing
+    else can be confirmed without resolving it, and an unconfirmable spec has to be
+    installed rather than assumed present.
+    """
+    if not all(_PINNED_SPEC.fullmatch(package) for package in packages):
+        return None
+    script = (
+        "import importlib.metadata as m, sys\n"
+        "for spec in sys.argv[1:]:\n"
+        "    name, _, want = spec.partition('==')\n"
+        "    if m.version(name) != want:\n"
+        "        raise SystemExit(1)\n"
+    )
+    args = " ".join(shlex.quote(package) for package in packages)
+    return f"PATH={_PINNED_PATH}; python3 -c {shlex.quote(script)} {args}"
 
 
 def _response_detail(response: object) -> str:
@@ -116,6 +144,9 @@ class SpritesSandboxProvider(SandboxProvider):
             timeout=self.settings.api_timeout_seconds,
         )
         session: SpriteSandbox | None = None
+        # Bound before the try so the failure handler can never raise NameError when
+        # the create-or-attach call itself fails; True means "nothing attached to lose".
+        created = True
         try:
             sprite, created = self._create_or_attach(client)
             ownership_label = _ownership_label(self.job_id)
@@ -134,14 +165,28 @@ class SpritesSandboxProvider(SandboxProvider):
 
             # A fresh Sprite starts permissive. Only trusted provider bootstrap runs
             # before the requested final policy is applied and live-verified.
+            #
+            # An attached Sprite is checked instead. Cleanup after a failed creation is
+            # best-effort, so an ownership label proves the Sprite is ours but never that
+            # it finished bootstrap; the check is what tells the two apart.
             if created:
                 self._bootstrap_packages(session)
+            else:
+                self._bootstrap_attached_packages(session)
             self._configure_network(sprite, had_open_baseline=created)
             return session
         except Exception:
             if session is None:
                 client.close()
             else:
+                if not created:
+                    # An attached Sprite carries earlier work from this same job, and the
+                    # close() below destroys it along with the Sprite. Say so.
+                    logger.warning(
+                        "Destroying attached Sprite %s after a failed session start; "
+                        "any earlier in-sandbox work for this job is discarded",
+                        self.sandbox_name,
+                    )
                 try:
                     session.close()
                 except Exception:  # noqa: BLE001 - preserve the creation failure, but report cleanup failure
@@ -193,14 +238,37 @@ class SpritesSandboxProvider(SandboxProvider):
         logger.info("Created Sprite for AI-Q job: name=%s", self.sandbox_name)
         return sprite, True
 
-    def _bootstrap_packages(self, session: SpriteSandbox) -> None:
+    def _configured_packages(self) -> tuple[str, ...]:
         configured = self.settings.python_packages
-        packages = tuple(self.config.python_packages) if configured is None else configured
+        return tuple(self.config.python_packages) if configured is None else configured
+
+    def _bootstrap_attached_packages(self, session: SpriteSandbox) -> None:
+        """Bootstrap a Sprite this provider attached to rather than created.
+
+        The check runs first, and only a Sprite that fails it is installed into. An
+        attached Sprite may already carry the restrictive policy, where an install
+        cannot reach the index; installing unconditionally would turn a healthy
+        resumed sandbox into a failed session and destroy it during cleanup.
+        """
+        packages = self._configured_packages()
+        if not packages:
+            return
+        check = _installed_check_command(packages)
+        if check is not None:
+            timeout = min(self.config.timeout, self.settings.bootstrap_timeout_seconds)
+            if session.execute(check, timeout=timeout).exit_code == 0:
+                logger.info("Attached Sprite already carries its configured packages: name=%s", self.sandbox_name)
+                return
+        self._bootstrap_packages(session)
+
+    def _bootstrap_packages(self, session: SpriteSandbox) -> None:
+        packages = self._configured_packages()
         if not packages:
             return
 
         package_args = " ".join(shlex.quote(package) for package in packages)
         command = (
+            f"PATH={_PINNED_PATH}; "
             "if command -v uv >/dev/null 2>&1; then "
             f"uv pip install --system -- {package_args}; "
             "else "
