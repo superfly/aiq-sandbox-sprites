@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aiq-sandbox-sprites"
-version = "0.1.0"
+version = "0.1.1"
 description = "Fly.io Sprites sandbox provider for NVIDIA AI-Q"
 readme = "README.md"
 license = "MIT"

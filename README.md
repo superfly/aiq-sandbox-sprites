@@ -24,8 +24,15 @@ host application's distribution channel.
 
 The provider requires AI-Q 2.2's `aiq.sandbox_providers` extension point. AI-Q
 2.1 does not expose that interface and is not supported. The tested compatibility
-range currently covers AI-Q `v2.2.1` with Deep Agents 0.6.8 and AI-Q's
-`develop` branch with Deep Agents 0.7.x.
+range covers AI-Q `v2.2.1` with Deep Agents 0.6.8 and AI-Q revision
+[`bf4e67d1564ef8d2ec8f65b5f9001e512befc095`](https://github.com/NVIDIA-AI-Blueprints/aiq/commit/bf4e67d1564ef8d2ec8f65b5f9001e512befc095)
+with Deep Agents 0.7.x. CI and release checks pin that revision.
+
+Newer upstream versions renamed the Python namespace to
+`deep_researcher_agent` and the entry-point group to
+`deep-researcher.sandbox_providers`. Those versions are not supported by this
+release; use the compatible AI-Q revision above rather than the moving
+`develop` branch.
 
 Set a restricted Sprites token on the AI-Q host:
 

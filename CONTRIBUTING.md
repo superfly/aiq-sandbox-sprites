@@ -6,8 +6,10 @@ behavior changes.
 
 ## Development setup
 
-Clone NVIDIA AI-Q beside this repository or into `.aiq-source`, then install the
-development dependencies:
+Clone NVIDIA AI-Q beside this repository or into `.aiq-source`, and check out
+`bf4e67d1564ef8d2ec8f65b5f9001e512befc095`, the supported revision used by CI
+and release checks. Newer upstream versions use a different Python namespace
+and provider entry-point group. Then install the development dependencies:
 
 ```bash
 python -m venv .venv
