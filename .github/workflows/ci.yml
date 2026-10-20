@@ -20,7 +20,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: NVIDIA-AI-Blueprints/aiq
-          ref: develop
+          # Last verified AI-Q namespace; newer upstream uses deep_researcher_agent.
+          ref: bf4e67d1564ef8d2ec8f65b5f9001e512befc095
           path: .aiq-source
       - uses: actions/setup-python@v5
         with:

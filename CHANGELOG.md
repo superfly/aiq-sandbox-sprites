@@ -8,3 +8,5 @@
 - Retry transient Sprite deletion failures during cleanup and always release
   the API client.
 - Warn when failed setup discards an attached Sprite's earlier workspace.
+- Pin CI and release checks to the supported AI-Q revision and document that
+  the renamed Deep Researcher Agent interface is not yet supported.
